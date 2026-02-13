@@ -1,0 +1,298 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs
+dist/
+#build/
+out/
+public/dist/
+public/electron/
+
+# Electron specific
+app/
+release/
+release-builds/
+
+# Platform specific builds
+*.dmg
+*.pkg
+*.deb
+*.rpm
+*.exe
+*.msi
+*.zip
+*.tar.gz
+
+# Logs
+logs/
+run/
+*.log
+ee.log
+ee-core.log
+ee-error.log
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+*.lcov
+
+# nyc test coverage
+.nyc_output
+
+# Dependency directories
+jspm_packages/
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# Optional REPL history
+.node_repl_history
+
+# Output of 'npm pack'
+*.tgz
+
+# Yarn Integrity file
+.yarn-integrity
+
+# dotenv environment variables file
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# parcel-bundler cache (https://parceljs.org/)
+.cache
+.parcel-cache
+
+# next.js build output
+.next
+
+# nuxt.js build output
+.nuxt
+
+# vuepress build output
+.vuepress/dist
+
+# Serverless directories
+.serverless
+
+# FuseBox cache
+.fusebox/
+
+# DynamoDB Local files
+.dynamodb/
+
+# TernJS port file
+.tern-port
+
+# Stores VSCode versions used for testing VSCode extensions
+.vscode-test
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Windows image file caches
+Thumbs.db
+ehthumbs.db
+
+# Folder config file
+Desktop.ini
+
+# Recycle Bin used on file shares
+$RECYCLE.BIN/
+
+# Windows Installer files
+*.cab
+*.msi
+*.msm
+*.msp
+
+# Windows shortcuts
+*.lnk
+
+# Electron-egg specific
+public/electron/**/*.js
+public/electron/**/*.js.map
+!public/electron/main.js
+
+# Local configuration files
+electron/config/config.local.js
+electron/config/build-env.json
+build-env.json
+.claude/settings.local.json
+
+# Development files
+test-reports/
+coverage/
+.nyc_output/
+
+# User-specific files
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+
+# Visual Studio 2015 cache/options directory
+.vs/
+
+# MSTest test Results
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+
+# NUNIT
+*.VisualState.xml
+TestResult.xml
+
+# Build Results of an ATL Project
+[Dd]ebugPS/
+[Rr]eleasePS/
+dlldata.c
+
+# DNX
+project.lock.json
+artifacts/
+
+# UE Project specific ignores
+*.uproject.DotSettings.user
+Binaries/
+Intermediate/
+Saved/
+DerivedDataCache/
+*.tmp
+*.bak
+*.swp
+*.swo
+
+# Auto-generated UE files
+*.opensdf
+*.sdf
+*.suo
+*.xcodeproj
+*.xcworkspace
+
+# UE4/UE5 specific
+#Build/
+Content/StarterContent/
+.vscode/
+*.VC.db
+*.VC.opendb
+
+# Temporary files
+*.tmp
+*.temp
+~*
+
+# Application specific
+user-data/
+app-data/
+cache/
+temp/
+data/
+
+# Security sensitive files
+*.key
+*.pem
+*.p12
+*.pfx
+secrets.json
+config.secret.js
+
+# Local development
+.env.development
+.env.production
+.local/
+
+# Package manager locks (keep one, remove others if not used)
+package-lock.json
+# yarn.lock
+pnpm-lock.yaml
+
+# Runtime generated files
+*.generated.js
+*.generated.ts
+
+# Backup files
+*.backup
+*.bak
+*.orig
+
+# Editor swap files
+*.swp
+*.swo
+*.swn
+
+# Auto-generated documentation
+docs/api/
+docs/build/
+
+# Performance monitoring
+.clinic/
+profile/
+*.cpuprofile
+*.heapprofile
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Archive files
+*.zip
+*.rar
+*.7z
+*.tar
+*.gz
+
+# Application updates
+updates/
+auto-update/
+
+# Screenshot and media files for testing
+screenshots/
+test-images/
+recordings/
+
+# Application specific data
+user-projects/
+scanned-projects/
+project-cache/
+
+# Electron builder
+electron-builder.env

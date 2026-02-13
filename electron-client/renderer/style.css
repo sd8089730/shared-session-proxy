@@ -1,0 +1,21 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; font-family: -apple-system, 'Segoe UI', sans-serif; display: flex; flex-direction: column; }
+
+#toolbar {
+  display: flex; align-items: center; gap: 4px;
+  padding: 6px 8px; background: #f0f0f0; border-bottom: 1px solid #ccc;
+}
+#toolbar button {
+  padding: 4px 10px; cursor: pointer; border: 1px solid #bbb; border-radius: 3px; background: #fff;
+}
+#toolbar button:hover { background: #e0e0e0; }
+#url-bar { flex: 1; padding: 4px 8px; border: 1px solid #bbb; border-radius: 3px; font-size: 13px; }
+#username { width: 120px; padding: 4px 8px; border: 1px solid #bbb; border-radius: 3px; font-size: 13px; }
+
+#webview { flex: 1; border: none; }
+
+#statusbar {
+  display: flex; justify-content: space-between;
+  padding: 3px 8px; background: #f0f0f0; border-top: 1px solid #ccc;
+  font-size: 12px; color: #555;
+}

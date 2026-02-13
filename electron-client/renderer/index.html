@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>720云共享浏览器</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; font-family: -apple-system, "Microsoft YaHei", sans-serif; overflow: hidden; }
+    
+    #toolbar {
+      height: 44px;
+      display: flex;
+      align-items: center;
+      padding: 4px 8px;
+      gap: 4px;
+      background: #f0f0f0;
+      border-bottom: 1px solid #ccc;
+    }
+    #toolbar button {
+      width: 32px; height: 32px;
+      border: 1px solid #bbb; border-radius: 4px;
+      background: #fff; cursor: pointer; font-size: 16px;
+    }
+    #toolbar button:hover { background: #e0e0e0; }
+    #toolbar button:active { background: #d0d0d0; }
+    #url-bar {
+      flex: 1; height: 32px;
+      border: 1px solid #bbb; border-radius: 4px;
+      padding: 0 8px; font-size: 13px;
+    }
+    #btn-go {
+      width: 50px; height: 32px;
+      border: 1px solid #1890ff; border-radius: 4px;
+      background: #1890ff; color: #fff; cursor: pointer; font-size: 13px;
+    }
+    #btn-go:hover { background: #40a9ff; }
+    #username {
+      width: 100px; height: 32px;
+      border: 1px solid #bbb; border-radius: 4px;
+      padding: 0 8px; font-size: 13px;
+    }
+    #btn-reconnect {
+      width: 36px; height: 32px;
+      border: 1px solid #52c41a; border-radius: 4px;
+      background: #52c41a; color: #fff; cursor: pointer; font-size: 16px;
+    }
+    #btn-reconnect:hover { background: #73d13d; }
+    #btn-reconnect:active { background: #389e0d; }
+    #proxy-url {
+      width: 180px; height: 32px;
+      border: 1px solid #bbb; border-radius: 4px;
+      padding: 0 8px; font-size: 12px; color: #666;
+    }
+    
+    /* BrowserView 区域由 main.js 控制，这里只需要工具栏和状态栏 */
+    #content-placeholder {
+      flex: 1;
+      background: #fff;
+    }
+    
+    #statusbar {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      height: 24px;
+      display: flex; align-items: center;
+      padding: 0 12px; gap: 16px;
+      background: #f5f5f5; border-top: 1px solid #ddd;
+      font-size: 12px; color: #666;
+    }
+    .status-ok { color: #52c41a; }
+    .status-loading { color: #faad14; }
+  </style>
+</head>
+<body>
+  <div id="toolbar">
+    <button id="btn-back" title="后退">◀</button>
+    <button id="btn-forward" title="前进">▶</button>
+    <button id="btn-reload" title="刷新">↻</button>
+    <input id="url-bar" type="text" value="https://www.720yun.com/my/720vr/tour" placeholder="输入网址…">
+    <button id="btn-go">前往</button>
+    <input id="proxy-url" type="text" placeholder="代理地址" title="修改后点击同步">
+    <button id="btn-reconnect" title="同步：保存代理地址并重新连接">⟳</button>
+    <input id="username" type="text" placeholder="用户名">
+  </div>
+  <div id="statusbar">
+    <span id="status-proxy">⬤ 代理: 连接中…</span>
+    <span id="status-sync"></span>
+    <span id="status-user"></span>
+    <span id="status-log" style="margin-left:auto;color:#999;font-size:11px"></span>
+  </div>
+
+  <script>
+    const urlBar = document.getElementById('url-bar');
+    const usernameInput = document.getElementById('username');
+    const proxyUrlInput = document.getElementById('proxy-url');
+    const statusProxy = document.getElementById('status-proxy');
+    const statusSync = document.getElementById('status-sync');
+    const statusUser = document.getElementById('status-user');
+    const statusLog = document.getElementById('status-log');
+
+    window.electronAPI.getConfig().then(cfg => {
+      usernameInput.value = cfg.userName;
+      proxyUrlInput.value = cfg.proxyUrl;
+      statusProxy.innerHTML = `<span class="status-ok">⬤</span> 代理: ${cfg.proxyUrl}`;
+      statusUser.textContent = `用户: ${cfg.userName}`;
+      if (cfg.logPath) statusLog.textContent = `日志: ${cfg.logPath}`;
+    });
+
+    // 导航
+    function doNavigate() {
+      let url = urlBar.value.trim();
+      if (url) window.electronAPI.navigate(url);
+    }
+    document.getElementById('btn-go').onclick = doNavigate;
+    urlBar.addEventListener('keydown', e => { if (e.key === 'Enter') doNavigate(); });
+    document.getElementById('btn-back').onclick = () => window.electronAPI.goBack();
+    document.getElementById('btn-forward').onclick = () => window.electronAPI.goForward();
+    document.getElementById('btn-reload').onclick = () => window.electronAPI.reload();
+
+    // 用户名
+    usernameInput.addEventListener('change', () => {
+      const name = usernameInput.value.trim();
+      if (name) {
+        window.electronAPI.setUsername(name);
+        statusUser.textContent = `用户: ${name}`;
+      }
+    });
+
+    proxyUrlInput.addEventListener('change', () => {
+      const url = proxyUrlInput.value.trim();
+      if (url) {
+        window.electronAPI.setProxyUrl(url);
+        statusProxy.innerHTML = `<span class="status-loading">⬤</span> 代理: ${url} (点击⟳同步)`;
+      }
+    });
+
+    // 重连
+    document.getElementById('btn-reconnect').onclick = () => {
+      const url = proxyUrlInput.value.trim();
+      if (url) window.electronAPI.setProxyUrl(url);
+      statusProxy.innerHTML = `<span class="status-loading">⬤</span> 同步中…`;
+      statusSync.textContent = '';
+      window.electronAPI.reconnect();
+    };
+
+    // 同步状态
+    window.electronAPI.onSyncStatus(s => {
+      if (s.ok) {
+        statusProxy.innerHTML = `<span class="status-ok">⬤</span> 代理: ${proxyUrlInput.value}`;
+        statusSync.textContent = `同步: rev${s.rev}, ${s.chars}字符`;
+      } else {
+        statusProxy.innerHTML = `<span class="status-loading">⬤</span> 代理: 未同步`;
+        statusSync.textContent = '同步: 无cookie';
+      }
+    });
+
+    // URL 变化
+    window.electronAPI.onUrlChanged(url => {
+      urlBar.value = url;
+    });
+
+    // 加载状态
+    window.electronAPI.onLoading(loading => {
+      if (loading) {
+        statusProxy.innerHTML = `<span class="status-loading">⬤</span> 加载中…`;
+      } else {
+        statusProxy.innerHTML = `<span class="status-ok">⬤</span> 已连接`;
+      }
+    });
+  </script>
+</body>
+</html>

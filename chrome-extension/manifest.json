@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "720云 Cookie 同步",
+  "version": "1.1",
+  "description": "抓取 720yun.com 的 cookies 并同步到共享代理",
+  "permissions": ["cookies", "storage", "activeTab", "scripting"],
+  "host_permissions": [
+    "https://*.720yun.com/*",
+    "https://720yun.com/*",
+    "http://*.720yun.com/*",
+    "http://localhost:7890/*",
+    "http://127.0.0.1:7890/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": "icon.png"
+  },
+  "icons": {
+    "48": "icon.png",
+    "128": "icon.png"
+  }
+}
