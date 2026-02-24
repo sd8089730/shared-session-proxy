@@ -23,6 +23,7 @@ const MAX_CACHED_VIEWS = 5;
 
 // 每站点同步状态
 const syncStates = new Map();
+let onlineClientsList = [];
 
 function getSyncState(siteId) {
   if (!syncStates.has(siteId)) {
@@ -210,6 +211,7 @@ function pushCookiesToProxy(siteId, cookieMap, lsData) {
   const state = getSyncState(siteId);
   const body = { cookies: cookieMap, source: clientConfig.clientId, siteId };
   if (lsData && Object.keys(lsData).length > 0) body.localStorage = lsData;
+  log('Sync', `[${siteId}] Pushing ${Object.keys(cookieMap).length} cookies, ${lsData ? Object.keys(lsData).length : 0} localStorage keys`);
   const payload = JSON.stringify(body);
   const url = new URL(`${getProxyUrl()}/__proxy_admin__/session/sync-cookies`);
   const req = http.request(url, {
@@ -249,11 +251,17 @@ function pushHeadersToProxy(siteId, headers) {
 
 // ============ BrowserView 管理 ============
 
+function reportActivity(siteId) {
+  proxyRequest('POST', '/clients/activity', { clientId: clientConfig.clientId, siteId: siteId || null })
+    .then(r => { if (!r.ok) log('Activity', `Report failed: ${r.error || r.status}`); })
+    .catch(() => {});
+}
+
 function createSiteView(site) {
   const siteId = site.siteId;
   const viewSession = session.fromPartition(`persist:${siteId}-${clientConfig.clientId}`);
   const view = new BrowserView({
-    webPreferences: { session: viewSession, contextIsolation: true, nodeIntegration: false, preload: path.join(__dirname, 'site-preload.js') },
+    webPreferences: { session: viewSession, contextIsolation: false, nodeIntegration: false, preload: path.join(__dirname, 'site-preload.js') },
   });
 
   const state = getSyncState(siteId);
@@ -375,6 +383,20 @@ function createSiteView(site) {
   view.webContents.on('did-stop-loading', () => {
     if (activeSiteId === siteId) mainWindow?.webContents.send('loading', false);
   });
+
+  // dom-ready 兜底注入 localStorage（仅首次加载，防止 preload 注入失败）
+  let lsFirstLoadDone = false;
+  view.webContents.on('dom-ready', () => {
+    if (lsFirstLoadDone) return;
+    lsFirstLoadDone = true;
+    const ls = state.localStorageMap;
+    if (Object.keys(ls).length > 0) {
+      const script = `(function(){var d=${JSON.stringify(ls)};var c=0;for(var k in d){try{localStorage.setItem(k,d[k]);c++}catch(_){}}return c})()`;
+      view.webContents.executeJavaScript(script)
+        .then(c => log('LocalStorage', `[${siteId}] dom-ready fallback injected ${c} keys`))
+        .catch(() => {});
+    }
+  });
   view.webContents.setWindowOpenHandler(({ url }) => { view.webContents.loadURL(url); return { action: 'deny' }; });
 
   // 加载失败重试
@@ -456,6 +478,7 @@ async function openSite(siteId) {
   mainWindow.addBrowserView(entry.view);
   resizeActiveView();
   mainWindow.webContents.send('view-changed', { type: 'site', siteId });
+  reportActivity(siteId);
 }
 
 function goHome() {
@@ -464,6 +487,7 @@ function goHome() {
   }
   activeSiteId = null;
   mainWindow.webContents.send('view-changed', { type: 'home' });
+  reportActivity(null);
 }
 
 function closeSiteView(siteId) {
@@ -474,6 +498,7 @@ function closeSiteView(siteId) {
     mainWindow.removeBrowserView(entry.view);
     activeSiteId = null;
     mainWindow.webContents.send('view-changed', { type: 'home' });
+    reportActivity(null);
   }
 
   entry.view.webContents.close();
@@ -500,7 +525,7 @@ let sseReq = null;
 
 function connectSSE() {
   if (sseReq) { try { sseReq.destroy(); } catch (_) {} sseReq = null; }
-  const url = `${getProxyUrl()}/__proxy_admin__/session/events?token=${encodeURIComponent(ADMIN_SECRET)}&clientId=${encodeURIComponent(clientConfig.clientId)}`;
+  const url = `${getProxyUrl()}/__proxy_admin__/session/events?token=${encodeURIComponent(ADMIN_SECRET)}&clientId=${encodeURIComponent(clientConfig.clientId)}&userName=${encodeURIComponent(clientConfig.userName)}`;
   log('SSE', `Connecting to ${getProxyUrl()}`);
 
   sseReq = http.get(url, { agent: new http.Agent({ family: 4, keepAlive: true }) }, (res) => {
@@ -536,6 +561,10 @@ function connectSSE() {
   sseReq.on('error', (e) => { log('SSE', `Error: ${e.message}`); setTimeout(connectSSE, 5000); });
 }
 
+function broadcastClientsToRenderer() {
+  if (mainWindow) mainWindow.webContents.send('clients-updated', onlineClientsList);
+}
+
 function handleSSEMessage(eventType, msg) {
   // 站点变更事件 → 刷新站点列表
   if (eventType === 'site-added' || eventType === 'site-updated' || eventType === 'site-removed') {
@@ -544,11 +573,35 @@ function handleSSEMessage(eventType, msg) {
     return;
   }
 
+  // 在线状态事件
+  if (eventType === 'client-online') {
+    const idx = onlineClientsList.findIndex(c => c.clientId === msg.clientId);
+    if (idx >= 0) onlineClientsList[idx] = msg;
+    else onlineClientsList.push(msg);
+    broadcastClientsToRenderer();
+    return;
+  }
+  if (eventType === 'client-offline') {
+    onlineClientsList = onlineClientsList.filter(c => c.clientId !== msg.clientId);
+    broadcastClientsToRenderer();
+    return;
+  }
+  if (eventType === 'client-activity') {
+    const client = onlineClientsList.find(c => c.clientId === msg.clientId);
+    if (client) client.activeSiteId = msg.activeSiteId;
+    broadcastClientsToRenderer();
+    return;
+  }
+
   // 初始快照
   if (eventType === 'snapshot') {
     if (msg.sites) {
       sitesList = msg.sites;
       if (mainWindow) mainWindow.webContents.send('sites-updated', sitesList);
+    }
+    if (msg.clients) {
+      onlineClientsList = msg.clients;
+      broadcastClientsToRenderer();
     }
     return;
   }
@@ -697,11 +750,23 @@ ipcMain.on('close-site-view', (_e, siteId) => closeSiteView(siteId));
 ipcMain.on('get-site-localStorage', (e) => {
   for (const [siteId, entry] of viewPool) {
     if (entry.view.webContents === e.sender) {
-      e.returnValue = getSyncState(siteId).localStorageMap || {};
+      const ls = getSyncState(siteId).localStorageMap || {};
+      log('IPC', `[${siteId}] get-site-localStorage → ${Object.keys(ls).length} keys`);
+      e.returnValue = ls;
       return;
     }
   }
+  log('IPC', 'get-site-localStorage: no matching view found');
   e.returnValue = {};
+});
+
+ipcMain.on('preload-localStorage-injected', (e, count) => {
+  for (const [siteId, entry] of viewPool) {
+    if (entry.view.webContents === e.sender) {
+      log('Preload', `[${siteId}] localStorage injected: ${count} keys`);
+      return;
+    }
+  }
 });
 
 app.whenReady().then(createWindow);

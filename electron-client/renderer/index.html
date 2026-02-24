@@ -114,6 +114,7 @@
     .add-card { border: 2px dashed #d9d9d9; background: transparent; }
     .add-card:hover { border-color: #1890ff; }
     .add-card .site-icon { background: #f0f0f0 !important; color: #bbb !important; font-size: 28px; }
+    .site-users { font-size: 11px; color: #8c8c8c; margin-top: 6px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 
     /* 添加站点对话框 */
     .dialog-overlay {
@@ -150,6 +151,22 @@
     }
     .status-ok { color: #52c41a; }
     .status-loading { color: #faad14; }
+    #status-online { position: relative; cursor: default; }
+    #status-online .online-popup {
+      display: none;
+      position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%);
+      background: #fff; border: 1px solid #d9d9d9; border-radius: 6px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      padding: 8px 0; margin-bottom: 6px;
+      min-width: 120px; max-width: 200px;
+      white-space: nowrap; z-index: 50;
+    }
+    #status-online:hover .online-popup { display: block; }
+    .online-popup .op-item {
+      padding: 3px 14px; font-size: 12px; color: #333;
+      overflow: hidden; text-overflow: ellipsis;
+    }
+    .online-popup .op-empty { padding: 6px 14px; font-size: 12px; color: #999; }
   </style>
 </head>
 <body>
@@ -185,6 +202,7 @@
   <div id="statusbar">
     <span id="status-proxy">&#11044; 代理: 连接中...</span>
     <span id="status-sync"></span>
+    <span id="status-online"><span class="online-text"></span><div class="online-popup"></div></span>
     <span id="status-user"></span>
     <span id="status-log" style="margin-left:auto;color:#999;font-size:11px"></span>
   </div>
@@ -195,6 +213,7 @@
     const proxyUrlInput = document.getElementById('proxy-url');
     const statusProxy = document.getElementById('status-proxy');
     const statusSync = document.getElementById('status-sync');
+    const statusOnline = document.getElementById('status-online');
     const statusUser = document.getElementById('status-user');
     const statusLog = document.getElementById('status-log');
     const homeView = document.getElementById('home-view');
@@ -203,6 +222,8 @@
 
     const cachedViewIds = new Set();
     const COLORS = ['#1890ff','#52c41a','#fa8c16','#722ed1','#eb2f96','#13c2c2','#f5222d','#2f54eb'];
+    let currentClients = [];
+    let currentSites = [];
 
     function siteColor(id) {
       let h = 0;
@@ -211,8 +232,10 @@
     }
 
     function renderSites(sites) {
+      currentSites = sites;
       siteGrid.innerHTML = '';
       for (const site of sites) {
+        const usersOnSite = currentClients.filter(c => c.activeSiteId === site.siteId).map(c => c.userName);
         const card = document.createElement('div');
         card.className = 'site-card' + (cachedViewIds.has(site.siteId) ? ' cached' : '');
         card.innerHTML = `
@@ -220,6 +243,7 @@
           <div class="site-icon" style="background:${siteColor(site.siteId)}">${site.name.charAt(0).toUpperCase()}</div>
           <div class="site-name">${site.name}</div>
           <div class="site-url">${site.targetUrl}</div>
+          ${usersOnSite.length ? `<div class="site-users">\u{1F464} ${usersOnSite.join(', ')}</div>` : ''}
         `;
         card.addEventListener('click', (e) => {
           if (e.target.classList.contains('close-btn')) return;
@@ -326,6 +350,16 @@
         : `<span class="status-ok">\u2b24</span> 已连接`;
     });
     window.electronAPI.onSitesUpdated(sites => renderSites(sites));
+    window.electronAPI.onClientsUpdated(clients => {
+      currentClients = clients;
+      statusOnline.querySelector('.online-text').textContent = `在线: ${clients.length}人`;
+      const popup = statusOnline.querySelector('.online-popup');
+      popup.innerHTML = clients.length
+        ? clients.map(c => `<div class="op-item">${c.userName}</div>`).join('')
+        : '<div class="op-empty">暂无在线用户</div>';
+      if (homeView.classList.contains('hidden')) return;
+      renderSites(currentSites);
+    });
     window.electronAPI.onViewChanged(({ type, siteId }) => {
       if (type === 'home') { homeView.classList.remove('hidden'); urlBar.value = ''; }
       else if (type === 'site') { homeView.classList.add('hidden'); cachedViewIds.add(siteId); }

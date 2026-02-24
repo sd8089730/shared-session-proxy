@@ -15,6 +15,7 @@ router.use((req, res, next) => {
 
 // ============ SSE 客户端管理 ============
 const sseClients = new Map();
+const onlineClients = new Map(); // clientId → { clientId, userName, activeSiteId, connectedAt }
 const MAX_SSE = 20;
 let sseConnCounter = 0;
 
@@ -168,6 +169,7 @@ router.get('/session/events', (req, res) => {
   if (sseClients.size >= MAX_SSE) return res.status(503).json({ error: 'too many SSE connections' });
 
   const clientId = req.query.clientId || `sse-${Date.now()}`;
+  const userName = req.query.userName || clientId;
   const connId = ++sseConnCounter;
 
   res.writeHead(200, {
@@ -177,7 +179,7 @@ router.get('/session/events', (req, res) => {
     'X-Accel-Buffering': 'no',
   });
 
-  // snapshot：含站点列表 + 各站点 session 摘要
+  // snapshot：含站点列表 + 各站点 session 摘要 + 在线客户端
   const sites = siteRegistry.getAll();
   const sessions = {};
   for (const site of sites) {
@@ -188,10 +190,32 @@ router.get('/session/events', (req, res) => {
       updatedAt: status.session.updatedAt,
     };
   }
-  res.write(`event: snapshot\ndata: ${JSON.stringify({ sites, sessions })}\n\n`);
+  const clientInfo = { clientId, userName, activeSiteId: null, connectedAt: new Date().toISOString() };
+  onlineClients.set(clientId, clientInfo);
+  const clients = Array.from(onlineClients.values());
+  res.write(`event: snapshot\ndata: ${JSON.stringify({ sites, sessions, clients })}\n\n`);
 
   sseClients.set(connId, { res, clientId });
-  req.on('close', () => sseClients.delete(connId));
+  broadcast('client-online', clientInfo, clientId);
+
+  req.on('close', () => {
+    sseClients.delete(connId);
+    const removed = onlineClients.get(clientId);
+    onlineClients.delete(clientId);
+    if (removed) broadcast('client-offline', { clientId });
+  });
+});
+
+// ============ 客户端活动上报 ============
+
+router.post('/clients/activity', (req, res) => {
+  const { clientId, siteId } = req.body || {};
+  if (!clientId) return res.status(400).json({ error: 'clientId required' });
+  const info = onlineClients.get(clientId);
+  if (!info) return res.status(404).json({ error: 'client not online' });
+  info.activeSiteId = siteId || null;
+  broadcast('client-activity', { clientId, activeSiteId: info.activeSiteId });
+  res.json({ ok: true });
 });
 
 // ============ 日志查询 ============

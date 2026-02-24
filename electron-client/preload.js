@@ -24,4 +24,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onSyncStatus: (cb) => ipcRenderer.on('sync-status', (_e, status) => cb(status)),
   onSitesUpdated: (cb) => ipcRenderer.on('sites-updated', (_e, sites) => cb(sites)),
   onViewChanged: (cb) => ipcRenderer.on('view-changed', (_e, data) => cb(data)),
+  onClientsUpdated: (cb) => ipcRenderer.on('clients-updated', (_e, clients) => cb(clients)),
 });
