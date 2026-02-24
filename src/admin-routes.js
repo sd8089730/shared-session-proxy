@@ -1,5 +1,6 @@
 const express = require('express');
-const sessionStore = require('./session-store');
+const { createSessionStore, removeSessionStore } = require('./session-store');
+const siteRegistry = require('./site-registry');
 const accessLog = require('./access-log');
 const config = require('./config');
 
@@ -12,24 +13,49 @@ router.use((req, res, next) => {
   next();
 });
 
-// ============ SSE client management ============
-const sseClients = new Map(); // connId → { res, clientId }
+// ============ SSE 客户端管理 ============
+const sseClients = new Map();
 const MAX_SSE = 20;
 let sseConnCounter = 0;
 
-sessionStore.onChange((payload) => {
-  const data = JSON.stringify({
-    cookies: payload.cookies,
-    revision: payload.revision,
-    updatedBy: payload.updatedBy,
-    source: payload.source,
-    updatedAt: new Date().toISOString(),
-  });
+function broadcast(event, data, excludeClientId) {
+  const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const [, client] of sseClients) {
-    if (client.clientId === payload.source) continue; // exclude originator
-    try { client.res.write(`event: cookie-update\ndata: ${data}\n\n`); } catch (_) {}
+    if (excludeClientId && client.clientId === excludeClientId) continue;
+    try { client.res.write(msg); } catch (_) {}
   }
-});
+}
+
+// 按 siteId 跟踪已绑定监听的 SessionStore
+const _listenedStores = new Set();
+
+function attachStoreListener(siteId) {
+  if (_listenedStores.has(siteId)) return;
+  _listenedStores.add(siteId);
+  createSessionStore(siteId).onChange((payload) => {
+    broadcast('cookie-update', {
+      siteId: payload.siteId,
+      cookies: payload.cookies,
+      localStorage: payload.localStorage,
+      revision: payload.revision,
+      updatedBy: payload.updatedBy,
+      source: payload.source,
+      updatedAt: new Date().toISOString(),
+    }, payload.source);
+  });
+}
+
+/** 初始化 SSE 广播：为所有站点绑定 SessionStore 变更监听 + SiteRegistry 变更监听 */
+function initBroadcast() {
+  for (const site of siteRegistry.getAll()) {
+    attachStoreListener(site.siteId);
+  }
+  siteRegistry.onChange((event, data) => {
+    broadcast(event, data);
+    if (event === 'site-added' && data.siteId) attachStoreListener(data.siteId);
+    if (event === 'site-removed' && data.siteId) _listenedStores.delete(data.siteId);
+  });
+}
 
 setInterval(() => {
   for (const [, client] of sseClients) {
@@ -37,47 +63,106 @@ setInterval(() => {
   }
 }, 30000);
 
-// ============ Session management ============
+// ============ Helper: 从请求解析 siteId → SessionStore ============
+
+function resolveStoreFromReq(req) {
+  const siteId = req.query.siteId || req.body?.siteId;
+  const site = siteId ? siteRegistry.get(siteId) : siteRegistry.getDefault(config.target);
+  if (!site) return { error: siteId ? 'Site not found' : 'No default site', status: siteId ? 404 : 502 };
+  const store = createSessionStore(site.siteId);
+  attachStoreListener(site.siteId);
+  return { site, store };
+}
+
+// ============ 站点管理 CRUD ============
+
+router.get('/sites', (req, res) => {
+  res.json({ ok: true, sites: siteRegistry.getAll() });
+});
+
+router.get('/sites/:siteId', (req, res) => {
+  const site = siteRegistry.get(req.params.siteId);
+  if (!site) return res.status(404).json({ error: 'Site not found' });
+  res.json({ ok: true, site });
+});
+
+router.post('/sites', (req, res) => {
+  const result = siteRegistry.add(req.body);
+  if (result.error) return res.status(400).json(result);
+  res.status(201).json({ ok: true, site: result.site });
+});
+
+router.put('/sites/:siteId', (req, res) => {
+  const result = siteRegistry.update(req.params.siteId, req.body);
+  if (result.error) return res.status(result.status || 400).json({ error: result.error });
+  if (result.targetUrlChanged) createSessionStore(req.params.siteId).reset();
+  res.json({ ok: true, site: result.site });
+});
+
+router.delete('/sites/:siteId', (req, res) => {
+  const result = siteRegistry.remove(req.params.siteId);
+  if (result.error) return res.status(result.status || 400).json({ error: result.error });
+  removeSessionStore(req.params.siteId);
+  _listenedStores.delete(req.params.siteId);
+  res.json({ ok: true });
+});
+
+// ============ Session 管理（支持 siteId 参数） ============
 
 router.get('/session/status', (req, res) => {
-  res.json({ ok: true, ...sessionStore.getStatus() });
+  const r = resolveStoreFromReq(req);
+  if (r.error) return res.status(r.status).json({ error: r.error });
+  res.json({ ok: true, siteId: r.site.siteId, ...r.store.getStatus() });
 });
 
 router.post('/session/cookies', (req, res) => {
+  const r = resolveStoreFromReq(req);
+  if (r.error) return res.status(r.status).json({ error: r.error });
   const { cookies } = req.body;
   if (!cookies || typeof cookies !== 'object') return res.status(400).json({ error: 'cookies object required' });
-  sessionStore.updateCookies(cookies, 'admin');
-  res.json({ ok: true, ...sessionStore.getStatus() });
+  r.store.updateCookies(cookies, 'admin');
+  res.json({ ok: true, siteId: r.site.siteId, ...r.store.getStatus() });
 });
 
 router.post('/session/raw-cookie', (req, res) => {
+  const r = resolveStoreFromReq(req);
+  if (r.error) return res.status(r.status).json({ error: r.error });
   const { cookie } = req.body;
   if (!cookie || typeof cookie !== 'string') return res.status(400).json({ error: 'cookie string required' });
-  sessionStore.setRawCookieString(cookie, 'admin');
-  res.json({ ok: true, ...sessionStore.getStatus() });
+  r.store.setRawCookieString(cookie, 'admin');
+  res.json({ ok: true, siteId: r.site.siteId, ...r.store.getStatus() });
 });
 
 router.post('/session/sync-cookies', (req, res) => {
-  const { cookies, source } = req.body;
+  const r = resolveStoreFromReq(req);
+  if (r.error) return res.status(r.status).json({ error: r.error });
+  const { cookies, localStorage, source } = req.body;
   if (!cookies || typeof cookies !== 'object') return res.status(400).json({ error: 'cookies object required' });
-  if (Object.keys(cookies).length === 0) return res.json({ ok: true, ...sessionStore.getStatus() });
-  sessionStore.replaceCookies(cookies, source || 'client', source || 'unknown');
-  res.json({ ok: true, ...sessionStore.getStatus() });
+  if (Object.keys(cookies).length === 0 && !localStorage) return res.json({ ok: true, siteId: r.site.siteId, ...r.store.getStatus() });
+  if (Object.keys(cookies).length > 0) r.store.replaceCookies(cookies, source || 'client', source || 'unknown');
+  if (localStorage && typeof localStorage === 'object' && Object.keys(localStorage).length > 0) {
+    r.store.updateLocalStorage(localStorage, source || 'client');
+  }
+  res.json({ ok: true, siteId: r.site.siteId, ...r.store.getStatus() });
 });
 
 router.post('/session/headers', (req, res) => {
+  const r = resolveStoreFromReq(req);
+  if (r.error) return res.status(r.status).json({ error: r.error });
   const { headers } = req.body;
   if (!headers || typeof headers !== 'object') return res.status(400).json({ error: 'headers object required' });
-  sessionStore.updateHeaders(headers, 'admin');
-  res.json({ ok: true, ...sessionStore.getStatus() });
+  r.store.updateHeaders(headers, 'admin');
+  res.json({ ok: true, siteId: r.site.siteId, ...r.store.getStatus() });
 });
 
 router.delete('/session', (req, res) => {
-  sessionStore.clear('admin');
-  res.json({ ok: true, message: 'Session cleared' });
+  const r = resolveStoreFromReq(req);
+  if (r.error) return res.status(r.status).json({ error: r.error });
+  r.store.clear('admin');
+  res.json({ ok: true, message: 'Session cleared', siteId: r.site.siteId });
 });
 
-// ============ SSE endpoint ============
+// ============ SSE 端点 ============
 
 router.get('/session/events', (req, res) => {
   if (sseClients.size >= MAX_SSE) return res.status(503).json({ error: 'too many SSE connections' });
@@ -92,19 +177,24 @@ router.get('/session/events', (req, res) => {
     'X-Accel-Buffering': 'no',
   });
 
-  const status = sessionStore.getStatus();
-  const snapshot = JSON.stringify({
-    cookies: status.session.cookies,
-    revision: status.session.revision,
-    updatedAt: status.session.updatedAt,
-  });
-  res.write(`event: snapshot\ndata: ${snapshot}\n\n`);
+  // snapshot：含站点列表 + 各站点 session 摘要
+  const sites = siteRegistry.getAll();
+  const sessions = {};
+  for (const site of sites) {
+    const status = createSessionStore(site.siteId).getStatus();
+    sessions[site.siteId] = {
+      cookieCount: status.cookieCount,
+      revision: status.session.revision,
+      updatedAt: status.session.updatedAt,
+    };
+  }
+  res.write(`event: snapshot\ndata: ${JSON.stringify({ sites, sessions })}\n\n`);
 
   sseClients.set(connId, { res, clientId });
   req.on('close', () => sseClients.delete(connId));
 });
 
-// ============ Log queries ============
+// ============ 日志查询 ============
 
 router.get('/logs', (req, res) => {
   const { userId, startTime, endTime, path, method, limit, offset } = req.query;
@@ -128,10 +218,14 @@ router.post('/logs/cleanup', (req, res) => {
   res.json({ ok: true, deleted, message: `Cleaned up logs older than ${days} days` });
 });
 
-// ============ Health ============
+// ============ Health（含多站点摘要） ============
 
 router.get('/health', (req, res) => {
-  res.json({ ok: true, uptime: process.uptime(), target: config.target, ...sessionStore.getStatus() });
+  const sites = siteRegistry.getAll().map(s => {
+    const status = createSessionStore(s.siteId).getStatus();
+    return { siteId: s.siteId, name: s.name, targetUrl: s.targetUrl, cookieCount: status.cookieCount, revision: status.session.revision };
+  });
+  res.json({ ok: true, uptime: process.uptime(), siteCount: sites.length, sites });
 });
 
-module.exports = router;
+module.exports = { router, initBroadcast };

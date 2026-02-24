@@ -1,48 +1,106 @@
 # Shared Session Proxy
 
-多客户端共享网站登录会话的代理系统。任意一台机器登录后，同网络下的其他机器无需登录即可访问已认证功能。
+多站点会话共享代理系统。支持动态添加任意网站，一台机器登录后，同网络下的其他机器无需登录即可复用认证状态。
 
 ```
-┌──────────┐                          ┌──────────┐
-│ Client A │──push cookies/headers──►│          │──SSE broadcast──►┌──────────┐
-│ (登录端)  │◄──────pull on start──────│  Proxy   │                 │ Client B │
-└──────────┘                          │  Server  │◄──push on change─┤ (免登录)  │
-                                      │          │──SSE broadcast──►└──────────┘
-┌──────────┐                          │  :7890   │
-│ Client C │◄──────pull + SSE─────────│          │
-│ (免登录)  │──push on change────────►└──────────┘
-└──────────┘                               │
-                                    data/session.json
+                        ┌──────────────────────────────┐
+                        │     Proxy Server (:7890)     │
+                        │                              │
+                        │  sites.json    sessions/     │
+                        │  (站点注册表)   ├ site-a.json │
+                        │                ├ site-b.json │
+                        │                └ ...         │
+                        │                              │
+                        │  Admin API   SSE 广播         │
+                        └──┬────────────┬──────────────┘
+                           │            │
+          ┌────────────────┼────────────┼────────────────┐
+          │                │            │                 │
+    ┌─────▼──────┐   ┌────▼─────┐   ┌──▼───────────┐    │
+    │ Electron A │   │Electron B│   │ Chrome 扩展   │    │
+    │ (登录端)    │   │ (免登录) │   │ (反向代理模式)│    │
+    │            │   │          │   │               │    │
+    │ BrowserView│   │BrowserView│  │ 流量经 Proxy  │    │
+    │ 直连目标站  │   │直连目标站 │   │ 转发到目标站  │    │
+    └────────────┘   └──────────┘   └───────────────┘
 ```
 
-## 组成
+## 架构
 
-| 模块 | 路径 | 说明 |
-|-----|------|------|
-| Proxy Server | `src/` | Express 代理服务，存储并分发会话数据 |
-| Electron Client | `electron-client/` | 内嵌浏览器客户端，自动同步会话 |
-| Chrome Extension | `chrome-extension/` | 浏览器扩展（辅助） |
+系统由三部分组成：
+
+| 模块 | 路径 | 职责 |
+|------|------|------|
+| Proxy Server | `src/` | 中央认证数据存储 + 站点管理 + SSE 广播 + 反向代理 |
+| Electron Client | `electron-client/` | 内嵌浏览器，直连目标站，本地注入认证数据 |
+| Chrome Extension | `chrome-extension/` | 浏览器扩展，流量经 Proxy 反向代理转发 |
+
+### 流量模型
+
+**Electron 客户端**：BrowserView 直连目标网站，不经过 Proxy。认证数据从 Proxy 拉取后注入本地 session，请求由客户端自己发出。
+
+**Chrome 扩展**：所有流量经 Proxy 反向代理转发，Proxy 的 `onProxyReq` 钩子在服务端注入 cookie/header。
+
+### 多站点路由
+
+Proxy 通过请求头 `X-Proxy-Site: {siteId}` 识别目标站点：
+
+```
+请求 → X-Proxy-Site 头 → SiteRegistry 查找 → 对应 SessionStore → 注入认证数据 → 转发
+                              ↓ (无头时)
+                         默认站点回退
+```
+
+- Electron 客户端：BrowserView 的 `onBeforeSendHeaders` 自动注入 `X-Proxy-Site` 头
+- Chrome 扩展：不携带此头，使用默认站点回退机制
+
+### 数据同步
+
+```
+Client A 登录 → cookie 变更触发 → 自动推送到 Proxy
+                                       ↓
+                               Proxy 存储 + revision++
+                                       ↓
+                               SSE 广播 cookie-update (排除来源客户端)
+                                       ↓
+                          Client B/C 收到 → 注入本地 BrowserView session
+```
+
+防循环机制：
+- `isSyncing` 标志 + 3 秒延迟释放：注入期间屏蔽本地 cookie changed 事件
+- `source` 跳过：SSE 消息携带 clientId，客户端跳过自身发起的变更
+- `revision` 去重：递增版本号，忽略 <= 本地版本的消息
 
 ## 快速开始
 
 ### 1. 启动 Proxy Server
 
 ```bash
-# 安装依赖
 npm install
-
-# 启动（默认端口 7890）
 npm start
-
-# 开发模式（文件变更自动重启）
-npm run dev
 ```
 
-启动后可访问健康检查确认运行状态：
+Docker 部署：
 
+```bash
+docker build -t shared-session-proxy .
+
+docker run -d --name session-proxy --restart unless-stopped \
+  -p 7890:7890 \
+  -v $(pwd)/data:/app/data \
+  shared-session-proxy
 ```
-http://localhost:7890/__proxy_admin__/health
-```
+
+可选环境变量：
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `PROXY_PORT` | `7890` | 服务监听端口 |
+| `PROXY_TARGET` | `https://www.720yun.com` | 初始默认站点（仅首次启动时生成） |
+| `CLIENT_TOKEN` | 空 | 代理请求访问令牌（空则不校验） |
+| `USE_CLASH_PROXY` | `false` | 启用 Clash HTTPS 隧道（`node start.js` 启动时） |
+
+健康检查：`GET http://localhost:7890/__proxy_admin__/health`
 
 ### 2. 启动 Electron Client
 
@@ -52,39 +110,144 @@ npm install
 npm start
 ```
 
-首次启动后在顶部工具栏填入 Proxy 地址（如 `http://192.168.7.44:7890`），点击同步按钮。
+首次启动后在工具栏填入 Proxy 地址（如 `http://192.168.7.44:7890`），点击同步按钮。
 
 ### 3. 使用流程
 
-1. **Client A** 打开后正常登录 720yun
-2. 登录成功后 cookies 和 `App-Authorization` 头自动推送到 Proxy
-3. **Client B** 启动 → 自动从 Proxy 拉取会话 → 直接进入已登录状态
-4. 会话变更通过 SSE 实时同步到所有在线客户端
+1. 首页九宫格 → 点击「添加站点」→ 输入名称和 URL
+2. 站点配置自动同步到 Proxy 和所有客户端
+3. 点击站点卡片打开 BrowserView → 正常登录
+4. 登录后 cookie 自动推送到 Proxy → SSE 广播 → 其他客户端注入认证数据
+5. 其他客户端打开同一站点 → 直接进入已登录状态
 
-## 配置
+## 站点管理 API
 
-### Proxy Server
+所有接口需携带 `Authorization: Bearer yunnto2wsxzaq!`。
 
-通过环境变量或直接修改 `src/config.js`：
+### 站点 CRUD
 
-| 参数 | 环境变量 | 默认值 | 说明 |
-|-----|---------|-------|------|
-| 端口 | `PROXY_PORT` | `7890` | 代理服务监听端口 |
-| 目标站 | `PROXY_TARGET` | `https://www.720yun.com` | 被代理的目标网站 |
-| 客户端令牌 | `CLIENT_TOKEN` | 空（不校验） | 代理请求的访问令牌 |
-| 日志保留 | — | `30` 天 | `config.log.retainDays` |
-| 数据库 | — | `./data/proxy.db` | SQLite 访问日志 |
-| 会话文件 | — | `./data/session.json` | Cookie/Header 持久化 |
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/sites` | 列出所有站点 |
+| GET | `/sites/:siteId` | 获取单个站点 |
+| POST | `/sites` | 添加站点（body: `{name, targetUrl, customHeaders?, startPage?}`） |
+| PUT | `/sites/:siteId` | 更新站点（merge 语义，siteId/addedAt 不可变） |
+| DELETE | `/sites/:siteId` | 删除站点及其 session 数据 |
 
-### Electron Client
+路径前缀均为 `/__proxy_admin__`。
 
-首次启动自动生成配置文件，路径：
+站点数据模型：
+
+```json
+{
+  "siteId": "github",
+  "name": "GitHub",
+  "targetUrl": "https://github.com",
+  "domains": [".github.com"],
+  "customHeaders": [],
+  "startPage": "/",
+  "addedAt": "2025-01-01T00:00:00.000Z"
+}
+```
+
+- `siteId`：从 targetUrl hostname 自动生成（去 www、取首段、小写化），碰撞追加 `-2`/`-3`
+- `domains`：cookie domain 自动推导，也可手动指定
+- `customHeaders`：需要捕获和注入的额外 header 名称（最多 10 个，禁止 host/cookie/authorization/x-proxy-site）
+
+### Session 管理
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/session/status?siteId=` | 站点 session 详情 |
+| POST | `/session/sync-cookies` | 替换全量 cookies（body 含 `siteId`） |
+| POST | `/session/cookies` | 合并更新 cookies |
+| POST | `/session/headers` | 更新 headers |
+| POST | `/session/raw-cookie` | 以原始字符串设置 cookie |
+| DELETE | `/session?siteId=` | 清空站点 session |
+
+`siteId` 缺失时回退到默认站点。
+
+### SSE
+
+连接：`GET /__proxy_admin__/session/events?token=<secret>&clientId=<id>`
+
+| 事件 | 说明 |
+|------|------|
+| `snapshot` | 连接时推送：站点列表 + 各站点 session 摘要 |
+| `cookie-update` | cookie 变更：含 `siteId`、`cookies`、`revision`、`source` |
+| `site-added` | 新站点添加 |
+| `site-updated` | 站点配置更新 |
+| `site-removed` | 站点删除 |
+
+### 其他
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/health` | 健康检查 + 各站点 session 摘要 |
+| GET | `/logs` | 访问日志查询 |
+| GET | `/logs/stats` | 日志统计 |
+| POST | `/logs/cleanup` | 清理过期日志 |
+
+## 项目结构
 
 ```
-%APPDATA%/720yun-shared-browser/720yun-client-config.json
+shared-session-proxy/
+├── src/
+│   ├── server.js           # 主服务：Express + 动态反向代理（http-proxy-middleware router 回调）
+│   ├── config.js           # 配置项（端口、目标站、令牌等）
+│   ├── site-registry.js    # 站点注册表：CRUD、siteId 生成、domain 推导、原子写入 sites.json
+│   ├── session-store.js    # Session 存储工厂：createSessionStore(siteId)，按站点隔离
+│   ├── admin-routes.js     # 管理 API + SSE 端点 + 站点 CRUD
+│   ├── access-log.js       # SQLite 访问日志
+│   └── middleware/
+│       ├── auth.js         # Bearer 认证（Admin API）+ 客户端令牌校验
+│       └── logger.js       # 请求日志
+├── electron-client/
+│   ├── main.js             # 主进程：多 BrowserView 管理、per-site cookie 同步、SSE、站点管理 IPC
+│   ├── preload.js          # Context bridge：站点管理 + 导航 + 事件 API
+│   ├── renderer/
+│   │   └── index.html      # 九宫格首页 + 工具栏 + 添加站点对话框 + 状态栏
+│   └── package.json
+├── chrome-extension/       # Chrome 扩展（反向代理模式，使用默认站点）
+├── data/                   # 运行时数据（git ignored）
+│   ├── sites.json          # 站点注册表
+│   ├── sessions/           # 按站点隔离的 session 文件
+│   │   ├── 720yun.json
+│   │   ├── github.json
+│   │   └── ...
+│   └── proxy.db            # 访问日志数据库
+├── start.js                # 启动入口（可选 Clash HTTPS 隧道）
+├── Dockerfile
+└── package.json
 ```
 
-内容：
+## Electron 客户端技术细节
+
+### 多 BrowserView 管理
+
+每个站点创建独立 BrowserView，session partition 为 `persist:{siteId}-{clientId}`。通过 `Map<siteId, {view, viewSession, lastAccessed}>` 管理，最多缓存 5 个（LRU 淘汰最旧）。
+
+### 请求拦截（onBeforeSendHeaders）
+
+每个 BrowserView 的 session 注册 `webRequest.onBeforeSendHeaders`，执行：
+
+1. 注入 `X-Proxy-Site: {siteId}` 头
+2. Cookie 合并：本地 cookie jar 已有的保留，从 Proxy 同步的共享 cookie 补充缺失项
+3. 共享 Header 注入：本地无值时从 Proxy 同步的 headers 填充
+4. customHeaders 捕获：站点配置中指定的 header 变化时推送到 Proxy
+
+### Cookie Domain 处理
+
+根据站点 `targetUrl` 自动推导 cookie domain（`deriveDomains()`）：
+- `https://www.example.com` → `[".example.com"]`
+- `https://192.168.1.1` → `["192.168.1.1"]`
+- `http://localhost` → `["localhost"]`
+
+cookie changed 事件按站点 domains 过滤，只处理匹配当前站点的 cookie。
+
+### 客户端配置
+
+路径：`%APPDATA%/shared-session-browser/shared-proxy-config.json`
 
 ```json
 {
@@ -94,140 +257,29 @@ npm start
 }
 ```
 
-- `proxyUrl` 可在客户端工具栏直接修改
-- `clientId` 用于区分不同客户端，SSE 消息据此跳过发起方
+日志：`%APPDATA%/shared-session-browser/shared-proxy-client.log`
 
-日志文件：`%APPDATA%/720yun-shared-browser/720yun-client.log`
+## 构建
 
-## 管理 API
+### Proxy Server (Docker)
 
-所有接口需携带 `Authorization: Bearer yunnto2wsxzaq!` 头。
+```bash
+docker build -t shared-session-proxy .
 
-| 方法 | 路径 | 说明 |
-|-----|------|------|
-| GET | `/__proxy_admin__/health` | 健康检查 + 会话概况 |
-| GET | `/__proxy_admin__/session/status` | 当前会话详情（cookies、headers、revision） |
-| POST | `/__proxy_admin__/session/cookies` | 合并更新 cookies |
-| POST | `/__proxy_admin__/session/sync-cookies` | 替换全量 cookies（客户端同步用） |
-| POST | `/__proxy_admin__/session/headers` | 更新 headers（如 App-Authorization） |
-| POST | `/__proxy_admin__/session/raw-cookie` | 以原始字符串格式设置 cookie |
-| DELETE | `/__proxy_admin__/session` | 清空会话 |
-| GET | `/__proxy_admin__/session/events` | SSE 事件流（实时同步通道） |
-| GET | `/__proxy_admin__/logs` | 查询访问日志 |
-| GET | `/__proxy_admin__/logs/stats` | 日志统计 |
-| POST | `/__proxy_admin__/logs/cleanup` | 清理过期日志 |
+# 前台调试
+docker run --rm -p 7890:7890 -v $(pwd)/data:/app/data shared-session-proxy
 
-### SSE 事件
-
-连接：`GET /__proxy_admin__/session/events?token=<secret>&clientId=<id>`
-
-| 事件 | 触发时机 | 数据 |
-|-----|---------|------|
-| `snapshot` | 连接建立时 | 当前全量 cookies + revision |
-| `cookie-update` | 任一客户端推送变更时 | 变更后的 cookies + revision + source |
-
-## 设计原理
-
-### 目标网站认证模型
-
-720yun 的认证由两个独立要素组成：
-
-| 要素 | 载体 | 来源 |
-|-----|------|------|
-| Session Cookie (`720yun_v8_session` 等) | HTTP Cookie | 服务端 Set-Cookie |
-| App-Authorization (32字符 token) | HTTP 请求头 | 前端 JS 运行时从内存/localStorage 读取 |
-
-服务端校验行为：
-- 请求 **不含** `App-Authorization` 头 → 仅校验 cookie → 通过则 **200**
-- 请求 **含** `App-Authorization` 头且值非空 → 校验 cookie + token → 通过则 **200**
-- 请求 **含** `App-Authorization` 头但值为空字符串 → 直接 **401**
-
-因此仅同步 cookie 不够，必须同时同步 `App-Authorization` 头。
-
-### 客户端请求拦截
-
-Electron 的 `webRequest.onBeforeSendHeaders` 拦截所有 `*720yun.com` 请求，执行两层处理：
-
-**Cookie 合并**（填充策略）：Electron cookie jar 中已有的值保留，sharedCookieMap 中 jar 缺少的项补充。解决 `apiv4.720yun.com` 等子域请求 cookie 为空的问题。
-
-**Auth Header 捕获/注入**：
-- 前端 JS 发出的请求自带有效 token → 捕获并推送到 Proxy
-- 前端 JS 发出的请求带空 token（Client B 无本地 token） → 从 sharedHeaders 注入
-
-### Cookie 域处理
-
-720yun 的 cookie 可能设置在 `www.720yun.com`（host-only），这些 cookie 不会随 `apiv4.720yun.com` 的请求发送。
-
-`ensureBroadDomain()` 在注入后将 `www.720yun.com` 域的 cookie 复制到 `.720yun.com`（覆盖所有子域）。`collectFullCookies()` 在推送前做同样的域名归一化。
-
-### SSE 防循环
-
-客户端注入 proxy 推送的 cookie 后，Electron 异步触发 cookie `changed` 事件 → CookieMonitor 检测到变更 → 推送回 proxy → proxy 广播 → 其他客户端注入 → 无限循环。
-
-防循环机制：
-1. **`isSyncing` 标志**：注入期间设为 `true`，CookieMonitor 检测到则跳过推送
-2. **延迟释放**：注入完成后延迟 3 秒释放标志，覆盖 Electron 异步事件派发 + CookieMonitor 2 秒防抖
-3. **source 跳过**：SSE 消息携带 `source`（clientId），客户端跳过自己发起的变更
-4. **revision 去重**：每次变更递增 revision，客户端忽略 ≤ 本地 revision 的消息
-
-### 数据流完整路径
-
-```
-Client A 登录
-  → 页面导航离开 /login
-  → 2s 后收集 cookies (collectFullCookies)
-  → pushCookiesToProxy() → POST /session/sync-cookies
-  → Proxy 写入 data/session.json, revision++
-  → SSE 广播 cookie-update (排除 Client A)
-  → Client B 收到 SSE
-  → handleSSEMessage() → 更新 sharedCookieMap + 注入 cookie store
-  → isSyncing 延迟 3s 释放
-
-同时:
-  → Client A 的 onBeforeSendHeaders 捕获 App-Authorization
-  → pushHeadersToProxy() → POST /session/headers
-  → Proxy 存入 data/session.json
-
-Client B 发起 API 请求:
-  → onBeforeSendHeaders 拦截
-  → Cookie: jar 值 + sharedCookieMap 填充
-  → App-Authorization: 空值 → 从 sharedHeaders 注入
-  → 请求携带完整认证信息 → 200
+# 后台生产
+docker run -d --name session-proxy --restart unless-stopped \
+  -p 7890:7890 -v $(pwd)/data:/app/data shared-session-proxy
 ```
 
-## 项目结构
-
-```
-shared-session-proxy/
-├── src/
-│   ├── server.js            # Express 主服务 + 代理转发
-│   ├── config.js            # 配置项
-│   ├── session-store.js     # Cookie/Header 持久化存储
-│   ├── admin-routes.js      # 管理 API + SSE 端点
-│   ├── access-log.js        # SQLite 访问日志
-│   └── middleware/
-│       ├── auth.js          # 管理 API 认证
-│       └── logger.js        # 请求日志
-├── electron-client/
-│   ├── main.js              # 主进程：会话同步、请求拦截、SSE
-│   ├── preload.js           # Context bridge
-│   ├── renderer/
-│   │   └── index.html       # 工具栏 + 状态栏 UI
-│   └── package.json
-├── chrome-extension/         # Chrome 扩展（辅助）
-├── data/
-│   ├── session.json         # 运行时会话数据
-│   └── proxy.db             # 访问日志数据库
-└── package.json
-```
-
-## 构建客户端
+### Electron Client
 
 ```bash
 cd electron-client
-
-# 构建便携版 exe
+npm install
 npm run dist
 ```
 
-输出位于 `electron-client/dist/`。
+输出便携版 exe 位于 `electron-client/dist/`。

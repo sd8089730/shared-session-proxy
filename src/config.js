@@ -38,9 +38,6 @@ module.exports = {
   // 数据库路径（SQLite）
   dbPath: './data/proxy.db',
 
-  // Cookie/Token 存储路径
-  sessionStorePath: './data/session.json',
-
   // 请求超时（毫秒）
   requestTimeout: 30000,
 
