@@ -121,7 +121,7 @@ npm start
 
 ## 站点管理 API
 
-所有接口需携带 `Authorization: Bearer yunnto2wsxzaq!`。
+所有接口需携带 `Authorization: Bearer 4110ba59-46e2-478a-b44f-e8e20413e842`。
 
 ### 站点 CRUD
 
