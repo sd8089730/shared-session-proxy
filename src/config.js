@@ -12,7 +12,7 @@ module.exports = {
   // 目标网站（要代理的网站地址）
   target: process.env.PROXY_TARGET || 'https://www.720yun.com',
 
-  adminSecret: 'yunnto2wsxzaq!',
+  adminSecret: '4110ba59-46e2-478a-b44f-e8e20413e842',
 
   // Electron 客户端认证 header
   userIdHeader: 'x-proxy-user-id',

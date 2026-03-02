@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 
 const ipv4Agent = new http.Agent({ family: 4 });
-const ADMIN_SECRET = 'yunnto2wsxzaq!';
+const ADMIN_SECRET = '4110ba59-46e2-478a-b44f-e8e20413e842';
 
 app.commandLine.appendSwitch('ignore-certificate-errors');
 app.commandLine.appendSwitch('no-sandbox');
